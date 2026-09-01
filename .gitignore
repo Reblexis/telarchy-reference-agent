@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.venv/
+.telarchy-id
+.telarchy-key
+.env
