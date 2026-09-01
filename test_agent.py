@@ -55,12 +55,19 @@ def metric(name, total, markets):
     return {"id": f"m-{name}", "name": name, "value": total, "total": total, "markets": markets}
 
 
-def market(mid, prediction, lo=0, hi=100, date="2026-12"):
+def market(mid, prediction, lo=0, hi=100, resolves="2027-01-01T00:00:00Z"):
+    """A market exactly as GET /api/status returns one TO A KEY HOLDER.
+
+    Deliberately without `targetDate`. That field comes back to an anonymous
+    caller and not to a key holder, and the catalog documents only the fields
+    below, so a fixture carrying it would let the agent depend on something
+    that vanishes the moment anybody uses it for real. It did, once.
+    """
     return {
         "id": mid,
-        "targetDate": date,
-        "resolvesOn": "2027-01-01T00:00:00Z",
+        "resolvesOn": resolves,
         "prediction": prediction,
+        "probability": 0.5,
         "rangeMin": lo,
         "rangeMax": hi,
     }
@@ -174,6 +181,12 @@ class TestNoKey(Base):
 
 
 class TestDryRun(Base):
+    def test_THE_FIELD_it_reports_the_instant_a_market_settles(self):
+        # Named after the rule in the guide: read resolvesOn, never targetDate.
+        SNAPSHOT["metrics"] = [metric("Revenue", 10, [market("m1", 90, resolves="2027-03-04T00:00:00Z")])]
+        _, out = self.go(live=False)
+        self.assertIn("2027-03-04", out)
+
     def test_THE_RULE_a_dry_run_places_nothing(self):
         # The default. Running this file must never cost anyone credits.
         SNAPSHOT["metrics"] = [metric("Revenue", 10, [market("m1", 90)])]

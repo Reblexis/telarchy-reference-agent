@@ -83,8 +83,15 @@ def run(client: Telarchy, live: bool) -> int:
             if target is None:
                 continue
 
+            # `resolvesOn` and never `targetDate`: the first is the exact
+            # instant this settles, the second is the period it belongs to and
+            # is not something you can order or compare. It is also the only
+            # one of the two the catalog documents, and GET /api/status returns
+            # `targetDate` to an anonymous caller but not to a key holder, so a
+            # client that reads it works until the day you give it a key.
+            when = str(market["resolvesOn"])[:10]
             where = (
-                f"  {metric['name']} {market['targetDate']}: "
+                f"  {metric['name']} {when}: "
                 f"market says {market['prediction']:g}, number is {value_now:g}"
             )
 
