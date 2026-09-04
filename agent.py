@@ -34,7 +34,7 @@ THRESHOLD = 0.05
 BUDGET = 1.0
 
 
-def decide(market: dict, value_now: float) -> float | None:
+def decide(market: dict, value_now: float, metric: dict) -> float | None:
     """Where this market should be, or None to leave it alone.
 
     THE STRATEGY, and it is deliberately the simplest defensible one: a market
@@ -49,7 +49,10 @@ def decide(market: dict, value_now: float) -> float | None:
 
     That is the point. It is a floor to beat, not a strategy to run. Replace
     this function with something that reads the brief, the metric's history and
-    the pending contracts, and you have a real participant.
+    the pending contracts, and you have a real participant. `llm_agent.py` is
+    that replacement done the laziest way: it asks a language model.
+    `metric` is the market's metric (name, definition, current value); this
+    rule does not need it, an opinion does.
     """
     span = market["rangeMax"] - market["rangeMin"]
     if span <= 0:
@@ -62,8 +65,11 @@ def decide(market: dict, value_now: float) -> float | None:
     return max(market["rangeMin"], min(market["rangeMax"], value_now))
 
 
-def run(client: Telarchy, live: bool) -> int:
-    """One cycle. Returns how many trades it placed, or would have."""
+def run(client: Telarchy, live: bool, decide=decide) -> int:
+    """One cycle. Returns how many trades it placed, or would have.
+
+    `decide` is the opinion; pass your own to keep everything else.
+    """
     # One call for everything: every metric, its current value, and every open
     # market on it. Two round trips per market would be the obvious way to
     # write this and it would be an order of magnitude more requests.
@@ -79,7 +85,7 @@ def run(client: Telarchy, live: bool) -> int:
             continue  # never measured, so there is nothing to disagree with
 
         for market in metric.get("markets") or []:
-            target = decide(market, value_now)
+            target = decide(market, value_now, metric)
             if target is None:
                 continue
 
