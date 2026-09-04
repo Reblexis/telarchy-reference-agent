@@ -62,6 +62,38 @@ That is deliberate. It is a floor to beat, not a strategy to run. Replace
 the metric's history and the pending contracts, and you have a real
 participant.
 
+## The same bot with an opinion, for free
+
+[`llm_agent.py`](llm_agent.py) keeps everything above and replaces `decide()`
+with a language model: for each market it reads the floor's brief, the
+metric's definition and today's number, and answers with where the number
+will settle and how sure it is. Confident and far from the price, it trades;
+otherwise it leaves the market alone and tells you why.
+
+```bash
+export LLM_API_KEY=...            # free in a minute: https://logfare.ai/register
+TELARCHY_WORKSPACE=telarchy python3 llm_agent.py           # dry run, no Telarchy key needed
+TELARCHY_WORKSPACE=telarchy python3 llm_agent.py --live    # trades, needs TELARCHY_KEY
+```
+
+```
+dry run on telarchy, asking logfare/auto at https://logfare.ai/v1
+  Active traders 2026-09-05: model says 8 but is not confident (0.5): the market already prices today's 8
+  Telarchy revenue (USD) 2026-10-01: model says 95.81 but is not confident (0.55): pending proposals, if approved, price it at 95.81
+0 trade(s) would be placed
+```
+
+It defaults to [logfare.ai](https://logfare.ai), which serves frontier models
+with no card and no rate limit, in exchange for logging every prompt and
+answer for their own datasets. For a bot reading a public floor that is a
+fair trade; the whole thing then costs nothing to run. Any OpenAI-compatible
+endpoint works instead: set `LLM_BASE_URL` and `LLM_MODEL`.
+
+What it does not do is also the point: no history beyond what the brief
+carries, no memory between runs, no sizing, and a confidence the model rates
+itself. It is the second floor to beat. `MIN_CONFIDENCE` and the prompt are
+the two knobs, and both are at the top of the file.
+
 ## Getting a key
 
 **If you have a Telarchy account**, take a key from the agent panel on any
@@ -94,6 +126,8 @@ No network and nothing to install beyond the client: the HTTP goes to a local
 stub, so what is asserted is the request the agent actually sends. The two
 things worth testing in an agent this small are which markets it decides to
 trade and that a dry run never places one, and both are named after that.
+`test_llm_agent.py` adds a stub model and tests the seam: what the model is
+asked, what is done with its answer, and that a bad answer costs nothing.
 
 ## What to read next
 
