@@ -21,6 +21,7 @@ from telarchy import Telarchy
 
 TRADES: list[dict] = []
 SNAPSHOT: dict = {}
+READS: list[str] = []
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -37,6 +38,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/api/status"):
+            READS.append(self.path)
             return self._json(200, SNAPSHOT)
         return self._json(404, {"error": "Not found"})
 
@@ -84,15 +86,17 @@ class Base(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
+        cls.server.server_close()
 
     def setUp(self):
         TRADES.clear()
         SNAPSHOT.clear()
+        READS.clear()
 
-    def go(self, live=False):
+    def go(self, live=False, **kwargs):
         client = Telarchy(key="k", workspace="w", base_url=self.base)
         with redirect_stdout(io.StringIO()) as out:
-            placed = agent.run(client, live=live)
+            placed = agent.run(client, live=live, **kwargs)
         return placed, out.getvalue()
 
 

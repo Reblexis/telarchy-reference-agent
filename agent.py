@@ -18,8 +18,10 @@ Run it:
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
+from decimal import Decimal
 
 from telarchy import IdentityRequired, NotAuthorized, Telarchy, TelarchyError
 
@@ -32,6 +34,20 @@ THRESHOLD = 0.05
 # the price you pay is the average across the move you make. Size up only after
 # you have watched what your own trades do to the price.
 BUDGET = 1.0
+CYCLE_BUDGET = 5.0
+
+
+def finite_number(value) -> bool:
+    """JSON booleans and numeric strings are not forecasts or allowances."""
+    try:
+        return type(value) in (int, float) and math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def validate_budget(value) -> None:
+    if not finite_number(value) or value < 0:
+        raise ValueError("budgets must be nonnegative finite numbers")
 
 
 def decide(market: dict, value_now: float, metric: dict) -> float | None:
@@ -65,7 +81,8 @@ def decide(market: dict, value_now: float, metric: dict) -> float | None:
     return max(market["rangeMin"], min(market["rangeMax"], value_now))
 
 
-def run(client: Telarchy, live: bool, decide=decide) -> int:
+def run(client: Telarchy, live: bool, decide=decide, *,
+        budget_per_trade: float = BUDGET, cycle_budget: float = CYCLE_BUDGET) -> int:
     """One cycle. Returns how many trades it placed, or would have.
 
     `decide` is the opinion; pass your own to keep everything else.
@@ -73,7 +90,12 @@ def run(client: Telarchy, live: bool, decide=decide) -> int:
     # One call for everything: every metric, its current value, and every open
     # market on it. Two round trips per market would be the obvious way to
     # write this and it would be an order of magnitude more requests.
-    snapshot = client.status(markets=True)
+    validate_budget(budget_per_trade)
+    validate_budget(cycle_budget)
+    if budget_per_trade == 0 or cycle_budget == 0:
+        return 0
+    remaining = Decimal(str(cycle_budget))
+    snapshot = client.status(markets=True, trends=True)
 
     placed = 0
     for metric in snapshot["metrics"]:
@@ -81,13 +103,25 @@ def run(client: Telarchy, live: bool, decide=decide) -> int:
         # is the number a market actually settles on. `value` is only the part
         # someone typed in.
         value_now = metric.get("total")
-        if value_now is None:
+        if not finite_number(value_now):
             continue  # never measured, so there is nothing to disagree with
 
         for market in metric.get("markets") or []:
+            if remaining <= 0:
+                return placed
+            lo, hi, price = (market.get(k) for k in ("rangeMin", "rangeMax", "prediction"))
+            if not all(finite_number(v) for v in (lo, hi, price)) or hi <= lo:
+                print(f"  {metric['name']}: skipped invalid market numbers")
+                continue
             target = decide(market, value_now, metric)
             if target is None:
                 continue
+            if not finite_number(target):
+                print(f"  {metric['name']}: skipped invalid forecast")
+                continue
+            target = max(lo, min(hi, target))
+            allowance = min(Decimal(str(budget_per_trade)), remaining)
+            budget = float(allowance)
 
             # `resolvesOn` and never `targetDate`: the first is the exact
             # instant this settles, the second is the period it belongs to and
@@ -111,9 +145,13 @@ def run(client: Telarchy, live: bool, decide=decide) -> int:
             quote = None
             try:
                 quote = client.trade(
-                    market["id"], target_value=target, max_budget=BUDGET, dry_run=True
+                    market["id"], target_value=target, max_budget=budget, dry_run=True
                 )
-            except (IdentityRequired, NotAuthorized):
+            except (IdentityRequired, NotAuthorized) as e:
+                if live:
+                    print(f"{where} -> refused: {e}")
+                    continue
+                remaining -= allowance
                 print(f"{where} -> would trade (quote needs a key)")
                 placed += 1
                 continue
@@ -127,6 +165,7 @@ def run(client: Telarchy, live: bool, decide=decide) -> int:
             )
 
             if not live:
+                remaining -= allowance
                 placed += 1
                 continue
 
@@ -134,12 +173,13 @@ def run(client: Telarchy, live: bool, decide=decide) -> int:
                 print(f"    skipped: short by {quote['shortfall']:.3f} credits")
                 continue
 
+            # Reserve before submitting: a lost response may hide a committed
+            # trade. Reusing this allowance could exceed the cycle budget.
+            remaining -= allowance
             try:
-                # The same call without dryRun. The client attaches an
-                # Idempotency-Key, so if this times out after the server
-                # committed, retrying returns the first result instead of
-                # buying twice.
-                fill = client.trade(market["id"], target_value=target, max_budget=BUDGET)
+                # No automatic retry. A deliberate retry must reuse the same
+                # persisted idempotency key AND body, not call trade() afresh.
+                fill = client.trade(market["id"], target_value=target, max_budget=budget)
                 print(f"    traded: {fill['shares']:.3f} shares for {fill['cost']:.3f} cr")
                 placed += 1
             except TelarchyError as e:
@@ -148,10 +188,18 @@ def run(client: Telarchy, live: bool, decide=decide) -> int:
     return placed
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+def parser(description: str) -> argparse.ArgumentParser:
+    """Both strategies expose the same workspace, dry-run, and credit limits."""
+    ap = argparse.ArgumentParser(description=description)
     ap.add_argument("--live", action="store_true", help="actually trade (default: dry run)")
     ap.add_argument("--workspace", default=os.environ.get("TELARCHY_WORKSPACE"))
+    ap.add_argument("--budget-per-trade", type=float, default=BUDGET)
+    ap.add_argument("--cycle-budget", type=float, default=CYCLE_BUDGET)
+    return ap
+
+
+def main() -> int:
+    ap = parser(__doc__.splitlines()[0])
     args = ap.parse_args()
 
     if not args.workspace:
@@ -168,7 +216,10 @@ def main() -> int:
     print(f"{'trading' if args.live else 'dry run'} on {args.workspace}")
 
     try:
-        placed = run(client, live=args.live)
+        placed = run(client, live=args.live, budget_per_trade=args.budget_per_trade, cycle_budget=args.cycle_budget)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
     except TelarchyError as e:
         print(f"failed: {e.code or e.status} {e}", file=sys.stderr)
         if e.doc_url:
