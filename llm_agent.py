@@ -104,7 +104,7 @@ Answer with ONE JSON object and nothing else: {{"value": <number>, "confidence":
 
 === THE METRIC ===
 Name: {metric.get('name')}
-Definition: {metric.get('definition') or '(none given)'}
+Definition: {metric.get('description') or '(none given)'}
 Number today: {value_now:g}
 {('Recent readings: ' + json.dumps(history)) if history else ''}
 

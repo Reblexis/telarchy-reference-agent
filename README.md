@@ -36,7 +36,8 @@ Only `--live` submits real trades. Find workspaces in the
 Choose a forecasting path:
 
 - **Deterministic:** change `decide()` in [agent.py](agent.py). Return a finite
-  target value or `None` to abstain. `metric["trend"]` contains recent
+  target value or `None` to abstain. `metric["description"]` describes the metric;
+  `metric["trend"]` contains recent
   `[unix_seconds, value]` readings. The runner requests trends and markets
   together, validates targets, and clamps them to the market range.
 - **LLM-assisted:** [llm_agent.py](llm_agent.py) passes the brief, metric readings,
