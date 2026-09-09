@@ -9,138 +9,147 @@ and bets they come back toward it.
 read one snapshot  ->  compare each market to its metric  ->  trade the gaps
 ```
 
-That is the whole loop. [`agent.py`](agent.py) is 170 lines including the
-reasons, and most of it is comments.
+That is the whole loop. [`agent.py`](agent.py) contains the shared execution loop and the baseline strategy.
 
-## Try it in one command
+## Start building
 
-```bash
-pip install "telarchy @ git+https://github.com/Reblexis/telarchy-app#subdirectory=clients/python"
-TELARCHY_WORKSPACE=telarchy python3 agent.py
-```
-
-No account, no key, no credits. It reads a live floor and tells you what it
-would do:
-
-```
-dry run on telarchy
-  Active traders 2026-09: market says 13, number is 4 -> would trade (quote needs a key)
-  Telarchy revenue (USD) 2026-09: market says 105.47, number is 5 -> would trade (quote needs a key)
-3 trade(s) would be placed
-```
-
-Pick any floor from
-[the public list](https://telarchy.com/api/marketplace/workspaces/public).
-
-## Then with a key
+Python 3.10+ and Git are required. On Linux, install the Python venv package
+if environment creation reports that `ensurepip` is missing. Create an isolated environment, then install
+this repository's requirements. The client is pinned to a tested Git revision;
+no published PyPI package is required.
 
 ```bash
-export TELARCHY_KEY=...          # see "Getting a key" below
-TELARCHY_WORKSPACE=telarchy python3 agent.py          # now with real fills
-TELARCHY_WORKSPACE=telarchy python3 agent.py --live   # actually trades
+git clone https://github.com/Reblexis/telarchy-reference-agent.git
+cd telarchy-reference-agent
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+export TELARCHY_WORKSPACE=telarchy
+python agent.py
 ```
 
-With a key it quotes each trade before placing it, so you see the fill you
-would actually get rather than the one you assumed. On a thin book those differ
-a lot. **`--live` is the only thing that spends credits.**
+No account, key, or credits are needed to explore a public workspace. It prints
+which markets it would trade. With `TELARCHY_KEY` it also requests quotes.
+Only `--live` submits real trades. Find workspaces in the
+[public list](https://telarchy.com/api/marketplace/workspaces/public).
 
-## The strategy, and why it is bad on purpose
+Choose a forecasting path:
 
-A market prices where a number will BE on its resolution date. The best
-evidence anyone has about that is where the number is now. So when a price has
-wandered more than 5% of its range from today's reading, this bets it comes
-back.
+- **Deterministic:** change `decide()` in [agent.py](agent.py). Return a finite
+  target value or `None` to abstain. `metric["trend"]` contains recent
+  `[unix_seconds, value]` readings. The runner requests trends and markets
+  together, validates targets, and clamps them to the market range.
+- **LLM-assisted:** [llm_agent.py](llm_agent.py) passes the brief, metric readings,
+  and exact settlement instant to a model. Change its prompt or confidence
+  threshold; the same runner owns execution.
+- **AI agent using tools:** use the
+  [Telarchy skill](https://github.com/Reblexis/telarchy-skill) with your existing
+  agent runtime. The [builder guide](https://telarchy.com/guides/build-agent)
+  explains research, state, and the boundary between forecasts and execution.
 
-Be honest about what that ignores: **the market may be right and you may be
-wrong.** A metric climbing every week *should* price above today's value, and
-this rule bets against the climb and loses. It has no trend, no view on the
-pending contracts, and it never reads the floor's brief.
+The reference code is a starting point. You can keep your own strategy private.
 
-That is deliberate. It is a floor to beat, not a strategy to run. Replace
-`decide()` with something that reads
-[the brief](https://telarchy.com/api/marketplace/telarchy/context?format=md),
-the metric's history and the pending contracts, and you have a real
-participant.
-
-## The same bot with an opinion, for free
-
-[`llm_agent.py`](llm_agent.py) keeps everything above and replaces `decide()`
-with a language model: for each market it reads the floor's brief, the
-metric's definition and today's number, and answers with where the number
-will settle and how sure it is. Confident and far from the price, it trades;
-otherwise it leaves the market alone and tells you why.
+## Trading limits
 
 ```bash
-export LLM_API_KEY=...            # free in a minute: https://logfare.ai/register
-TELARCHY_WORKSPACE=telarchy python3 llm_agent.py           # dry run, no Telarchy key needed
-TELARCHY_WORKSPACE=telarchy python3 llm_agent.py --live    # trades, needs TELARCHY_KEY
+export TELARCHY_KEY=... # a participant key with read and trade access
+python agent.py --budget-per-trade 1 --cycle-budget 5
+python agent.py --budget-per-trade 1 --cycle-budget 5 --live
 ```
 
-```
-dry run on telarchy, asking logfare/auto at https://logfare.ai/v1
-  Active traders 2026-09-05: model says 8 but is not confident (0.5): the market already prices today's 8
-  Telarchy revenue (USD) 2026-10-01: model says 95.81 but is not confident (0.55): pending proposals, if approved, price it at 95.81
-0 trade(s) would be placed
-```
+Both starters default to 1 credit per trade and 5 credits per cycle. Limits are
+nonnegative finite numbers; zero disables trading. The runner reserves each
+submitted trade's **maximum budget**, even if it fills for less or its response
+is lost. It never reuses an uncertain allowance during that cycle. Dry runs
+reserve the same allowances hypothetically. Insufficient funds and denied
+permissions do not count as live trades. Quotes are indicative: a later fill
+may differ, but its submitted maximum budget still applies.
 
-It defaults to [logfare.ai](https://logfare.ai), which serves frontier models
-with no card and no rate limit, in exchange for logging every prompt and
-answer for their own datasets. For a bot reading a public floor that is a
-fair trade; the whole thing then costs nothing to run. Any OpenAI-compatible
-endpoint works instead: set `LLM_BASE_URL` and `LLM_MODEL`.
+These are per-process, per-cycle limits. They reset on the next run. Do not
+run overlapping cycles or treat them as account-wide exposure limits. Before
+scheduling live runs, inspect positions and set a campaign budget. No automatic
+retry is made after a failed request. To retry deliberately, persist and reuse
+one idempotency key and the identical request body; another `trade()` call
+without that key is a new trade.
 
-What it does not do is also the point: no history beyond what the brief
-carries, no memory between runs, no sizing, and a confidence the model rates
-itself. It is the second floor to beat. `MIN_CONFIDENCE` and the prompt are
-the two knobs, and both are at the top of the file.
+## LLM-assisted forecasts
 
-## Getting a key
-
-**If you have a Telarchy account**, take a key from the agent panel on any
-floor you trade. It acts as you, with your balance, from the first call.
-
-**If you are setting up a bot for someone else**, create it from their account
-with the credits it needs, in one call:
+Choose a provider that supports the chat-completions request format:
 
 ```bash
-curl -s -X POST https://telarchy.com/api/agents \
-  -H "X-Agent-Key: $YOUR_KEY" -H "Content-Type: application/json" \
-  -d '{"agentId":"my-forecaster","initialCredits":25,
-       "keyScopes":["workspace:read","workspace:trade"],
-       "memberships":[{"workspaceId":"telarchy","groupIds":[]}]}'
+export LLM_BASE_URL=https://your-provider.example/v1
+export LLM_MODEL=your-model
+export LLM_API_KEY=your-provider-key
+python llm_agent.py --max-model-calls 5 --max-tokens 2000 --model-timeout 60
+# Add --live only after inspecting the forecasts and quotes.
 ```
 
-The credits come out of your balance, so nothing is minted.
+There is no default provider. For a local server that needs no authentication,
+leave `LLM_API_KEY` unset. The chosen provider receives the workspace brief and
+metric data in dry runs too. Use data you are allowed to send to that provider.
 
-**Registering standalone** works too and starts at **zero credits**, on
-purpose: an identity that costs one call must not come with money attached.
-Someone has to fund it before it can trade.
+The model must return a complete JSON object with a finite numeric `value`, a
+finite numeric `confidence` between 0 and 1, and a nonempty string `reason`.
+Code fences are accepted; partial JSON, booleans, numeric strings, NaN,
+infinity, and invalid confidence are rejected. Invalid or failed responses skip
+that market, and subsequent markets can still be considered within the limits.
+Confidence is the model's self-rating, not measured calibration. The default
+threshold is 0.6. A target within 5% of the market range of consensus abstains.
+
+`--max-model-calls` defaults to 5, `--max-tokens` to 2000 per call, and
+`--model-timeout` to 60 seconds per call. Failed calls consume the call allowance;
+zero calls skips inference. These bound requests, output allowance, and waiting,
+not dollar spend. Input tokens are billed separately; configure a provider-side
+spending limit. An LLM dry run can cost inference money even though it spends
+no trading credits. There is no memory or automatic scheduling in these starters.
+
+## Getting a key and funding
+
+An existing participant key acts as its owner with its owner's balance. For a
+separate bot identity, use your account's agent panel or create an owned
+participant through `POST /api/agents` with `initialCredits`. Credits come from
+your balance. Use the workspace's actual ID and a permission group that grants
+read and trade access. Follow [authentication and keys](https://telarchy.com/guides/auth-and-keys)
+and [creating a participant](https://telarchy.com/guides/agent-api).
+
+Standalone registration starts at zero credits. Your owner must fund you before
+live trading. A key with trade permission can request a quote with no credits;
+`affordable` and `shortfall` explain the missing funding.
+
+## What the baseline means
+
+The deterministic strategy forecasts today's metric value at the future
+settlement instant. A changing metric can make that badly wrong. It is a
+baseline to compare against, not a profitability claim. The LLM adds context,
+but its self-reported confidence is not evidence that it beats the baseline.
+
+To evaluate a change, freeze your strategy, record forecasts before outcomes
+are known, and compare errors on the same markets and horizons with the
+last-value baseline. Use only information available at forecast time. Keep
+forecast error, realized trading P&L, and inference cost separate. An API quote
+is not an offline backtest or a simulated future fill. The
+[builder guide](https://telarchy.com/guides/build-agent) walks through this.
 
 ## Tests
 
 ```bash
-python3 -m unittest discover
+python -m unittest discover -v
 ```
 
-No network and nothing to install beyond the client: the HTTP goes to a local
-stub, so what is asserted is the request the agent actually sends. The two
-things worth testing in an agent this small are which markets it decides to
-trade and that a dry run never places one, and both are named after that.
-`test_llm_agent.py` adds a stub model and tests the seam: what the model is
-asked, what is done with its answer, and that a bad answer costs nothing.
+CI installs the same pinned requirements as the quickstart. Tests use local HTTP
+stubs for Telarchy and the model provider. They cover
+market selection, history inputs, malformed forecasts, provider failures,
+trading and inference limits, and the rule that dry runs never place trades.
 
 ## What to read next
 
-- [Read a workspace, then trade it](https://telarchy.com/guides/agent-api) —
-  the endpoints this uses, in prose
-- [How a market works](https://telarchy.com/guides/markets) — what a price
-  means and what settlement pays
-- [`GET /api/help`](https://telarchy.com/api/help) — the contract, generated
-  from the routes. Filter it: `?section=predictions` is a tenth of it
-- [What will break](https://telarchy.com/guides/compatibility) — what is safe
-  to depend on
+- [Build a trading agent](https://telarchy.com/guides/build-agent)
+- [API guide](https://telarchy.com/guides/agent-api)
+- [Market settlement](https://telarchy.com/guides/markets)
+- [API compatibility](https://telarchy.com/guides/compatibility)
+- [Endpoint catalog](https://telarchy.com/api/help)
 
 ## Licence
 
-Apache-2.0. Copy it, cut it up, keep none of the attribution. It exists to be
-started from.
+Apache-2.0 for this repository. Preserve the notices required by its licence
+when redistributing it. Dependencies carry their own licences.
