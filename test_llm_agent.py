@@ -101,7 +101,7 @@ class Base(unittest.TestCase):
 
     def one_market(self, price=50, total=10, lo=0, hi=100):
         m = metric("Revenue", total, [market("m1", price, lo=lo, hi=hi, resolves="2027-03-04T00:00:00Z")])
-        m["definition"] = "Money in, net of refunds."
+        m["description"] = "Money in, net of refunds."
         SNAPSHOT["metrics"] = [m]
 
 
