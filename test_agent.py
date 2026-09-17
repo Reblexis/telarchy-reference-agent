@@ -22,6 +22,7 @@ from telarchy import Telarchy
 TRADES: list[dict] = []
 SNAPSHOT: dict = {}
 READS: list[str] = []
+BALANCE: list[float] = [100.0]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -40,6 +41,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/status"):
             READS.append(self.path)
             return self._json(200, SNAPSHOT)
+        if self.path.startswith("/api/agents/me/balance"):
+            READS.append(self.path)
+            if self.headers.get("X-Agent-Key") == "bad":
+                return self._json(401, {"error": "Invalid agent key"})
+            return self._json(200, {"balance": BALANCE[0], "liquidityBalance": 0})
         return self._json(404, {"error": "Not found"})
 
     def do_POST(self):
