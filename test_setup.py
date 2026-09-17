@@ -231,9 +231,123 @@ class TestHintsCanBePasted(Setup):
             _, out = self.invoke(llm_agent)
         self.assertIn(os.path.join(".venv", "bin", "python") + " llm_agent.py --login", out)
 
-    def test_an_interpreter_outside_this_folder_is_just_python(self):
+    def test_a_path_with_a_space_is_quoted(self):
+        with mock.patch.object(agent.sys, "executable", os.path.join(os.getcwd(), "my env", "python")):
+            _, out = self.invoke(agent)
+        self.assertIn("'my env/python' agent.py --login", out)
+
+    def test_an_interpreter_outside_this_folder_is_named_in_full(self):
         with mock.patch.object(agent.sys, "executable", "/usr/bin/python3"), \
-             mock.patch.object(agent.os, "getcwd", return_value="/home/someone/agent"), \
              mock.patch.object(agent.os.path, "relpath", return_value="../../../usr/bin/python3"):
             _, out = self.invoke(agent)
-        self.assertIn("python agent.py --login", out)
+        self.assertIn("/usr/bin/python3 agent.py --login", out)
+
+
+class TestKeyFileIsNeverHalfWrittenOrBrieflyPublic(Setup):
+    def test_a_loose_old_key_file_is_replaced_by_a_private_one_not_rewritten_in_place(self):
+        self.save("old-key")
+        os.chmod(self.key_file, 0o644)
+        before = os.stat(self.key_file).st_ino
+        self.invoke(agent, "--login", typed="good-key")
+        self.assertEqual(stat.S_IMODE(os.stat(self.key_file).st_mode), 0o600)
+        self.assertNotEqual(os.stat(self.key_file).st_ino, before)
+
+    def test_a_symlink_where_the_key_goes_is_replaced_not_followed(self):
+        target = os.path.join(self.dir.name, "victim")
+        with open(target, "w") as f:
+            f.write("precious")
+        os.symlink(target, self.key_file)
+        self.invoke(agent, "--login", typed="good-key")
+        with open(target) as f:
+            self.assertEqual(f.read(), "precious")
+        self.assertFalse(os.path.islink(self.key_file))
+
+    def test_a_failed_save_keeps_the_old_key_and_says_so_without_a_traceback(self):
+        self.save("old-key")
+        with mock.patch.object(agent.os, "replace", side_effect=OSError("disk full")):
+            code, out = self.invoke(agent, "--login", typed="good-key")
+        self.assertEqual(code, 1)
+        self.assertIn("disk full", out)
+        self.assertEqual(self.read_key(), "old-key")
+        self.assertEqual(os.listdir(self.dir.name), [".telarchy-key"])  # no stray temp file holding a key
+
+    def test_a_terminal_that_would_show_the_key_is_refused(self):
+        def loud(*a, **k):
+            import warnings
+            warnings.warn("echo", agent.getpass.GetPassWarning)
+            return "good-key"
+        with mock.patch.object(agent.getpass, "getpass", loud):
+            code, out = self.invoke_raw(agent, "--login")
+        self.assertEqual(code, 2)
+        self.assertFalse(os.path.exists(self.key_file))
+
+    def invoke_raw(self, module, *flags):
+        def make(key=None, workspace=None, **_):
+            return Telarchy(key=key, workspace=workspace, base_url=self.base)
+        environ = {k: v for k, v in os.environ.items() if not k.startswith("TELARCHY_")}
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, environ, clear=True), \
+             mock.patch.object(agent, "KEY_FILE", self.key_file), \
+             mock.patch.object(module, "Telarchy", side_effect=make), \
+             mock.patch("sys.argv", [module.__name__ + ".py", *flags]), \
+             redirect_stdout(out), redirect_stderr(out):
+            return module.main(), out.getvalue()
+
+    def test_login_warns_when_an_environment_key_will_still_win(self):
+        _, out = self.invoke(agent, "--login", typed="good-key", env={"TELARCHY_KEY": "bad"})
+        self.assertIn("TELARCHY_KEY", out)
+        self.assertIn("wins", out)
+
+
+class TestHintsKeepWhatWasPreviewed(Setup):
+    def test_the_live_hint_carries_the_workspace_and_limits_just_previewed(self):
+        _, out = self.invoke(agent, "--workspace", "my floor", "--cycle-budget", "0.1", env={"TELARCHY_KEY": "k"})
+        hint = [l for l in out.splitlines() if l.rstrip().endswith("--live")][-1]
+        self.assertIn("--cycle-budget 0.1", hint)
+        self.assertIn("'my floor'", hint)
+
+    def test_the_login_hint_is_a_whole_pasteable_line(self):
+        _, out = self.invoke(agent)
+        self.assertTrue(any(l.rstrip().endswith("agent.py --login") for l in out.splitlines()), out)
+
+    def test_login_is_never_part_of_a_hint_to_trade(self):
+        _, out = self.invoke(agent, "--login", typed="good-key")
+        self.assertFalse([l for l in out.splitlines() if "--login" in l and "--live" in l])
+
+
+class TestHonestAboutCost(Setup):
+    def test_the_llm_preview_promises_only_that_no_credits_are_spent(self):
+        _, out = self.invoke(llm_agent)
+        self.assertNotIn("nothing is spent", out.lower())
+        self.assertNotIn("nothing was spent", out.lower())
+        self.assertIn("model", out.lower())
+
+
+class TestRepeatingRunSurvives(Setup):
+    def test_a_floor_that_is_down_at_startup_does_not_end_a_repeating_run(self):
+        real = Telarchy.balance
+        calls = []
+        def flaky(self_):
+            calls.append(1)
+            raise agent.TelarchyError("down", status=503)
+        with mock.patch.object(Telarchy, "balance", flaky), self.assertRaises(Stop):
+            self.invoke(agent, "--every", "1", env={"TELARCHY_KEY": "k"}, sleeps=[None, Stop()])
+        self.assertEqual(len([r for r in READS if r.startswith("/api/status")]), 2)
+
+    def test_the_same_outage_ends_a_single_run(self):
+        with mock.patch.object(Telarchy, "balance", side_effect=agent.TelarchyError("down", status=503)):
+            code, _ = self.invoke(agent, env={"TELARCHY_KEY": "k"})
+        self.assertEqual(code, 1)
+
+    def test_a_refused_key_ends_even_a_repeating_run(self):
+        code, _ = self.invoke(agent, "--every", "1", env={"TELARCHY_KEY": "bad"})
+        self.assertEqual(code, 1)
+
+    def test_ctrl_c_stops_cleanly(self):
+        code, out = self.invoke(agent, "--every", "1", sleeps=KeyboardInterrupt())
+        self.assertEqual(code, 0)
+        self.assertIn("stopped", out)
+
+    def test_an_absurd_interval_is_refused_up_front(self):
+        code, _ = self.invoke(agent, "--every", "1e308", sleeps=Stop())
+        self.assertEqual(code, 2)

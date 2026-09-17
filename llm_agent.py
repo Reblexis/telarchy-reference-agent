@@ -186,12 +186,13 @@ def main() -> int:
     client, code = agent.start(args, lambda **kw: Telarchy(**kw))
     if client is None:
         return code
-    print(f"{'trading' if args.live else 'preview (nothing is spent)'} on {args.workspace}, "
+    print(f"{'trading' if args.live else 'preview (no credits are spent; your model provider may charge for its calls)'} on {args.workspace}, "
           f"asking {model()} at {base_url()}")
     return agent.cycles(args, lambda: run(
         client, live=args.live, budget_per_trade=args.budget_per_trade,
         cycle_budget=args.cycle_budget, max_model_calls=args.max_model_calls,
-        max_tokens=args.max_tokens, model_timeout=args.model_timeout))
+        max_tokens=args.max_tokens, model_timeout=args.model_timeout),
+        spent="No credits were spent (your model provider may have charged for its calls).")
 
 
 if __name__ == "__main__":
