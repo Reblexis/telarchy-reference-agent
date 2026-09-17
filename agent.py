@@ -22,8 +22,12 @@ import argparse
 import getpass
 import math
 import os
+import shlex
+import subprocess
 import sys
+import tempfile
 import time
+import warnings
 from decimal import Decimal
 
 from telarchy import IdentityRequired, NotAuthorized, Telarchy, TelarchyError
@@ -215,15 +219,26 @@ def parser(description: str) -> argparse.ArgumentParser:
     return ap
 
 
-def me() -> str:
-    """This program as the person just typed it, so every hint can be pasted."""
+def me(*extra: str) -> str:
+    """This run as the person typed it, plus `extra`, as one line that can be pasted.
+
+    It keeps the workspace and limits they just previewed: a hint that quietly
+    dropped `--cycle-budget 0.1` would raise their spending the moment they
+    pasted it. `--login` and `--live` are never carried over; a hint names
+    those itself.
+    """
     exe = sys.executable or "python"
     try:
         rel = os.path.relpath(exe)
-        exe = rel if not rel.startswith("..") else "python"
+        if not rel.startswith(".."):
+            exe = rel
     except ValueError:  # another drive, on Windows
-        exe = "python"
-    return f"{exe} {sys.argv[0] if sys.argv and sys.argv[0] else 'agent.py'}"
+        pass
+    kept = [a for a in sys.argv[1:] if a not in ("--login", "--live")]
+    words = [exe, sys.argv[0] if sys.argv and sys.argv[0] else "agent.py", *kept, *extra]
+    if os.name == "nt":
+        return subprocess.list2cmdline(words)
+    return " ".join(shlex.quote(w) for w in words)
 
 
 def saved_key() -> str | None:
@@ -240,13 +255,44 @@ def saved_key() -> str | None:
 
 def refused(e: TelarchyError) -> None:
     print(f"Telarchy refused this key ({e}).", file=sys.stderr)
-    print(f"Create or copy a key at {AGENTS_URL}, then run: {me()} --login", file=sys.stderr)
+    if (os.environ.get("TELARCHY_KEY") or "").strip():
+        print("It came from TELARCHY_KEY in this terminal; unset or replace that variable.", file=sys.stderr)
+    print(f"Create or copy a key at {AGENTS_URL}, then run:", file=sys.stderr)
+    print(f"  {me('--login')}", file=sys.stderr)
+
+
+def save_key(key: str) -> None:
+    """Replace the key file in one step with one that was private from birth.
+
+    Writing into the old file would leave the new key readable for a moment if
+    that file was loose, would follow a symlink, and would destroy the old key
+    if the disk filled halfway. A private temp file renamed over it does none
+    of those. On Windows the file takes the folder's permissions.
+    """
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(KEY_FILE), prefix=".telarchy-key.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(key + "\n")
+        os.replace(tmp, KEY_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def login(make_client, workspace: str) -> int:
     """Ask for the key without echoing it, prove it works, then keep it."""
     try:
-        key = getpass.getpass("Paste your Telarchy API key (it stays hidden), then press Enter: ").strip()
+        with warnings.catch_warnings():
+            # getpass falls back to VISIBLE input where it cannot hide it.
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            key = getpass.getpass("Paste your Telarchy API key (it stays hidden), then press Enter: ").strip()
+    except getpass.GetPassWarning:
+        print("This terminal cannot hide what you type, so the key was not asked for.", file=sys.stderr)
+        print("Run this in an ordinary terminal window, or set TELARCHY_KEY instead.", file=sys.stderr)
+        return 2
     except (EOFError, KeyboardInterrupt):
         key = ""
     if not key:
@@ -260,17 +306,21 @@ def login(make_client, workspace: str) -> int:
         else:
             print(f"Could not check the key: {e.code or e.status} {e}. Nothing saved.", file=sys.stderr)
         return 1
-    # Created private rather than made private afterwards, so the key is never
-    # readable by anyone else even for a moment.
-    fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(key + "\n")
-    os.chmod(KEY_FILE, 0o600)
+    try:
+        save_key(key)
+    except OSError as e:
+        print(f"The key works but could not be saved ({e}). Any key saved before is untouched.", file=sys.stderr)
+        return 1
     print(f"Connected. Balance: {balance:g} credits. Key saved to {KEY_FILE}")
+    if (os.environ.get("TELARCHY_KEY") or "").strip():
+        print("Note: TELARCHY_KEY is set in this terminal and wins over the saved key. "
+              "Unset it to use the key you just saved.")
     if balance <= 0:
         print(f"This bot has no credits yet. Its owner adds them at {AGENTS_URL}")
-    print(f"Next: {me()}          (preview with real fills)")
-    print(f"Then: {me()} --live   (actually trades)")
+    print("Next, preview with estimated prices:")
+    print(f"  {me()}")
+    print("Then, to actually trade:")
+    print(f"  {me('--live')}")
     return 0
 
 
@@ -282,14 +332,14 @@ def start(args, make_client):
     """
     if args.login:
         return None, login(make_client, args.workspace)
-    if args.every is not None and not (finite_number(args.every) and args.every > 0):
-        print("--every takes a number of minutes above zero.", file=sys.stderr)
+    if args.every is not None and not (finite_number(args.every) and 0 < args.every <= 60 * 24 * 365):
+        print("--every takes a number of minutes above zero (and under a year).", file=sys.stderr)
         return None, 2
 
     key = saved_key()
     if args.live and not key:
-        print(f"--live needs your key. Run: {me()} --login", file=sys.stderr)
-        print(f"Keys come from {AGENTS_URL}. Previewing works without one.", file=sys.stderr)
+        print(f"--live needs your key. Keys come from {AGENTS_URL}. Connect yours with:", file=sys.stderr)
+        print(f"  {me('--login')}", file=sys.stderr)
         return None, 2
 
     client = make_client(key=key, workspace=args.workspace)
@@ -301,9 +351,12 @@ def start(args, make_client):
         except TelarchyError as e:
             if e.status in (401, 403):
                 refused(e)
-            else:
-                print(f"failed: {e.code or e.status} {e}", file=sys.stderr)
-            return None, 1
+                return None, 1
+            print(f"failed: {e.code or e.status} {e}", file=sys.stderr)
+            if args.every is None:
+                return None, 1
+            # A repeating run outlives an outage, at startup like anywhere else.
+            return client, None
         print(f"connected, balance {balance:g} credits")
         if args.live and balance <= 0:
             print(f"This bot has no credits, so it cannot trade. Its owner adds them at {AGENTS_URL}",
@@ -312,33 +365,41 @@ def start(args, make_client):
     return client, None
 
 
-def cycles(args, once) -> int:
+def cycles(args, once, spent: str = "No credits were spent.") -> int:
     """Run `once` one time, or forever with `--every`. `once` returns trades placed."""
-    while True:
-        code = 0
-        try:
-            placed = once()
-            print(f"{placed} trade(s) {'placed' if args.live else 'would be placed'}")
-            if args.live and placed:
-                print(f"See your bot and its trades: {AGENTS_URL}")
-            elif not args.live and saved_key():
-                print(f"Nothing was spent. To actually trade: {me()} --live")
-            elif not args.live:
-                print(f"To see real fills and trade, connect a key: {me()} --login  (keys: {AGENTS_URL})")
-        except ValueError as e:
-            print(str(e), file=sys.stderr)
-            return 2
-        except TelarchyError as e:
-            print(f"failed: {e.code or e.status} {e}", file=sys.stderr)
-            if e.doc_url:
-                print(f"  {e.doc_url}", file=sys.stderr)
-            code = 1
-        if args.every is None:
-            return code
-        # A floor that is down for a minute should not end a bot meant to run
-        # all week, so a failed cycle waits like any other.
-        print(f"next cycle in {args.every:g} min (Ctrl+C stops)")
-        time.sleep(args.every * 60)
+    try:
+        while True:
+            code = 0
+            try:
+                placed = once()
+                print(f"{placed} trade(s) {'placed' if args.live else 'would be placed'}")
+                if args.live:
+                    print(f"See your bot and its trades: {AGENTS_URL}" if placed
+                          else "Nothing worth trading right now. Prices move; try again later or use --every.")
+                elif saved_key():
+                    print(f"{spent} To actually trade:")
+                    print(f"  {me('--live')}")
+                else:
+                    print(f"{spent} To see estimated prices and then trade, get a key at {AGENTS_URL} and run:")
+                    print(f"  {me('--login')}")
+            except ValueError as e:
+                print(str(e), file=sys.stderr)
+                return 2
+            except TelarchyError as e:
+                print(f"failed: {e.code or e.status} {e}", file=sys.stderr)
+                if e.doc_url:
+                    print(f"  {e.doc_url}", file=sys.stderr)
+                code = 1
+            if args.every is None:
+                return code
+            # A floor that is down for a minute should not end a bot meant to
+            # run all week, so a failed cycle waits like any other. The wait
+            # starts when a cycle ends, so cycles never overlap.
+            print(f"next cycle in {args.every:g} min (Ctrl+C stops)")
+            time.sleep(args.every * 60)
+    except KeyboardInterrupt:
+        print("\nstopped")
+        return 0
 
 
 def main() -> int:
@@ -346,7 +407,7 @@ def main() -> int:
     client, code = start(args, lambda **kw: Telarchy(**kw))
     if client is None:
         return code
-    print(f"{'trading' if args.live else 'preview (nothing is spent)'} on {args.workspace}")
+    print(f"{'trading' if args.live else 'preview (no credits are spent)'} on {args.workspace}")
     return cycles(args, lambda: run(client, live=args.live, budget_per_trade=args.budget_per_trade,
                                     cycle_budget=args.cycle_budget))
 

@@ -37,13 +37,16 @@ Then connect a key, once:
 ```
 
 It asks for the key without showing it, checks it against Telarchy, prints
-your balance, and saves it to `.telarchy-key` beside `agent.py`, readable only
-by you and ignored by Git. A refused key is never saved. New terminals keep
+your balance, and saves it to `.telarchy-key` beside `agent.py`, ignored by
+Git. On macOS and Linux only you can read that file; on Windows it takes the
+folder's permissions, so keep the folder private. The file is replaced in one
+step, so a failed save never loses the key you had. A refused key is never
+saved, and a terminal that cannot hide typing is refused too. New terminals keep
 working; `TELARCHY_KEY`, when set, wins over the saved key. Keys come from
 [telarchy.com/agents](https://telarchy.com/agents).
 
 ```bash
-.venv/bin/python agent.py                    # preview again, now with real fills
+.venv/bin/python agent.py                    # preview again, now with estimated prices
 .venv/bin/python agent.py --live             # actually trades
 .venv/bin/python agent.py --live --every 30  # one cycle every 30 minutes, until Ctrl+C
 ```
@@ -51,8 +54,10 @@ working; `TELARCHY_KEY`, when set, wins over the saved key. Keys come from
 Only `--live` submits real trades. Another floor: `--workspace <slug>` or
 `TELARCHY_WORKSPACE`, from the
 [public list](https://telarchy.com/api/marketplace/workspaces/public). With
-`--every`, cycles run one after another, never overlapping, and a failed cycle
-waits for the next one instead of ending the run.
+`--every`, the wait starts when a cycle ends, so cycles never overlap; a failed
+cycle waits for the next one instead of ending the run, and Ctrl+C stops it.
+Every hint the program prints repeats the workspace and limits you ran with,
+so pasting it never changes what you previewed.
 
 Choose a forecasting path:
 
