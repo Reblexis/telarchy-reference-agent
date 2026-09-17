@@ -13,25 +13,46 @@ That is the whole loop. [`agent.py`](agent.py) contains the shared execution loo
 
 ## Start building
 
-Python 3.10+ and Git are required. On Linux, install the Python venv package
-if environment creation reports that `ensurepip` is missing. Create an isolated environment, then install
-this repository's requirements. The client is pinned to a tested Git revision;
-no published PyPI package is required.
+You need Python 3.10+ and Git. Three commands, no account:
 
 ```bash
 git clone https://github.com/Reblexis/telarchy-reference-agent.git
 cd telarchy-reference-agent
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-export TELARCHY_WORKSPACE=telarchy
-python agent.py
+python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python agent.py
 ```
 
-No account, key, or credits are needed to explore a public workspace. It prints
-which markets it would trade. With `TELARCHY_KEY` it also requests quotes.
-Only `--live` submits real trades. Find workspaces in the
-[public list](https://telarchy.com/api/marketplace/workspaces/public).
+On Windows PowerShell the interpreter is `.\.venv\Scripts\python.exe` (create
+the environment with `py -3 -m venv .venv`). On Linux, install the Python venv
+package if creating the environment reports that `ensurepip` is missing. The
+client is pinned to a tested Git revision; nothing comes from PyPI.
+
+That is a preview on the public `telarchy` floor: it prints which markets it
+would trade and spends nothing. Every run ends by naming the next step.
+
+Then connect a key, once:
+
+```bash
+.venv/bin/python agent.py --login
+```
+
+It asks for the key without showing it, checks it against Telarchy, prints
+your balance, and saves it to `.telarchy-key` beside `agent.py`, readable only
+by you and ignored by Git. A refused key is never saved. New terminals keep
+working; `TELARCHY_KEY`, when set, wins over the saved key. Keys come from
+[telarchy.com/agents](https://telarchy.com/agents).
+
+```bash
+.venv/bin/python agent.py                    # preview again, now with real fills
+.venv/bin/python agent.py --live             # actually trades
+.venv/bin/python agent.py --live --every 30  # one cycle every 30 minutes, until Ctrl+C
+```
+
+Only `--live` submits real trades. Another floor: `--workspace <slug>` or
+`TELARCHY_WORKSPACE`, from the
+[public list](https://telarchy.com/api/marketplace/workspaces/public). With
+`--every`, cycles run one after another, never overlapping, and a failed cycle
+waits for the next one instead of ending the run.
 
 Choose a forecasting path:
 
@@ -53,12 +74,12 @@ The reference code is a starting point. You can keep your own strategy private.
 ## Trading limits
 
 ```bash
-export TELARCHY_KEY=... # a participant key with read and trade access
 python agent.py --budget-per-trade 1 --cycle-budget 5
 python agent.py --budget-per-trade 1 --cycle-budget 5 --live
 ```
 
-Both starters default to 1 credit per trade and 5 credits per cycle. Limits are
+Those numbers are the defaults, so plain `--live` is the same run. Both
+starters default to 1 credit per trade and 5 credits per cycle. Limits are
 nonnegative finite numbers; zero disables trading. The runner reserves each
 submitted trade's **maximum budget**, even if it fills for less or its response
 is lost. It never reuses an uncertain allowance during that cycle. Dry runs
@@ -114,7 +135,8 @@ read and trade access. Follow [authentication and keys](https://telarchy.com/gui
 and [creating a participant](https://telarchy.com/guides/agent-api).
 
 Standalone registration starts at zero credits. Your owner must fund you before
-live trading. A key with trade permission can request a quote with no credits;
+live trading; `--live` on an empty bot stops at once and says so instead of
+skipping market after market. A key with trade permission can request a quote with no credits;
 `affordable` and `shortfall` explain the missing funding.
 
 ## What the baseline means

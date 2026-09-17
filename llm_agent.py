@@ -178,38 +178,20 @@ def main() -> int:
     ap.add_argument("--model-timeout", type=float, default=MODEL_TIMEOUT)
     args = ap.parse_args()
 
-    if not args.workspace:
-        print("Set TELARCHY_WORKSPACE (a floor's slug or id), or pass --workspace.", file=sys.stderr)
-        print("Public floors: https://telarchy.com/api/marketplace/workspaces/public", file=sys.stderr)
-        return 2
-
-    if not base_url() or not model():
+    if not args.login and (not base_url() or not model()):
         print("Set LLM_BASE_URL and LLM_MODEL to your chosen provider and model.", file=sys.stderr)
         return 2
 
-    key = os.environ.get("TELARCHY_KEY")
-    if args.live and not key:
-        print("--live needs TELARCHY_KEY. Reading works without one.", file=sys.stderr)
-        return 2
-
-    client = Telarchy(key=key, workspace=args.workspace)
-    print(f"{'trading' if args.live else 'dry run'} on {args.workspace}, asking {model()} at {base_url()}")
-
-    try:
-        placed = run(client, live=args.live, budget_per_trade=args.budget_per_trade,
-                     cycle_budget=args.cycle_budget, max_model_calls=args.max_model_calls,
-                     max_tokens=args.max_tokens, model_timeout=args.model_timeout)
-    except ValueError as e:
-        print(str(e), file=sys.stderr)
-        return 2
-    except TelarchyError as e:
-        print(f"failed: {e.code or e.status} {e}", file=sys.stderr)
-        if e.doc_url:
-            print(f"  {e.doc_url}", file=sys.stderr)
-        return 1
-
-    print(f"{placed} trade(s) {'placed' if args.live else 'would be placed'}")
-    return 0
+    # `Telarchy` is looked up here, at call time, so a test can replace it.
+    client, code = agent.start(args, lambda **kw: Telarchy(**kw))
+    if client is None:
+        return code
+    print(f"{'trading' if args.live else 'preview (nothing is spent)'} on {args.workspace}, "
+          f"asking {model()} at {base_url()}")
+    return agent.cycles(args, lambda: run(
+        client, live=args.live, budget_per_trade=args.budget_per_trade,
+        cycle_budget=args.cycle_budget, max_model_calls=args.max_model_calls,
+        max_tokens=args.max_tokens, model_timeout=args.model_timeout))
 
 
 if __name__ == "__main__":
