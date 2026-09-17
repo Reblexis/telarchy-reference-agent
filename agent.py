@@ -22,8 +22,8 @@ import argparse
 import getpass
 import math
 import os
+import re
 import shlex
-import subprocess
 import sys
 import tempfile
 import time
@@ -53,6 +53,9 @@ KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".telarchy-k
 
 # Where a person creates a bot, gets its key, and gives it credits.
 AGENTS_URL = "https://telarchy.com/agents"
+
+# The setup page gives Windows users PowerShell commands, so hints are quoted for it.
+WINDOWS = os.name == "nt"
 
 
 def finite_number(value) -> bool:
@@ -236,9 +239,18 @@ def me(*extra: str) -> str:
         pass
     kept = [a for a in sys.argv[1:] if a not in ("--login", "--live")]
     words = [exe, sys.argv[0] if sys.argv and sys.argv[0] else "agent.py", *kept, *extra]
-    if os.name == "nt":
-        return subprocess.list2cmdline(words)
+    if WINDOWS:
+        quoted = [powershell_quote(w) for w in words]
+        # PowerShell runs a quoted program only through the call operator.
+        return ("& " if quoted[0] != words[0] else "") + " ".join(quoted)
     return " ".join(shlex.quote(w) for w in words)
+
+
+def powershell_quote(word: str) -> str:
+    """Single quotes, where PowerShell expands nothing; a quote inside is doubled."""
+    if word and re.fullmatch(r"[\w.:\\/=+-]+", word):
+        return word
+    return "'" + word.replace("'", "''") + "'"
 
 
 def saved_key() -> str | None:

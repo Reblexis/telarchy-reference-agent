@@ -4,6 +4,7 @@ import io
 import os
 import stat
 import tempfile
+import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from unittest import mock
 
@@ -79,7 +80,8 @@ class TestLogin(Setup):
         code, out = self.invoke(agent, "--login", typed="  good-key \n")
         self.assertEqual(code, 0, out)
         self.assertEqual(self.read_key(), "good-key")
-        self.assertEqual(stat.S_IMODE(os.stat(self.key_file).st_mode), 0o600)
+        if os.name != "nt":  # Windows has no owner-only mode; the file takes the folder's permissions
+            self.assertEqual(stat.S_IMODE(os.stat(self.key_file).st_mode), 0o600)
         self.assertIn("12.5", out)
         self.assertNotIn("good-key", out)
         self.assertEqual(TRADES, [])
@@ -231,10 +233,24 @@ class TestHintsCanBePasted(Setup):
             _, out = self.invoke(llm_agent)
         self.assertIn(os.path.join(".venv", "bin", "python") + " llm_agent.py --login", out)
 
-    def test_a_path_with_a_space_is_quoted(self):
-        with mock.patch.object(agent.sys, "executable", os.path.join(os.getcwd(), "my env", "python")):
+    def test_a_path_with_a_space_is_quoted_for_bash(self):
+        with mock.patch.object(agent, "WINDOWS", False), \
+             mock.patch.object(agent.sys, "executable", os.path.join(os.getcwd(), "my env", "python")):
             _, out = self.invoke(agent)
-        self.assertIn("'my env/python' agent.py --login", out)
+        self.assertIn("'" + os.path.join("my env", "python") + "' agent.py --login", out)
+
+    def test_on_windows_hints_are_quoted_for_powershell_and_a_quoted_program_is_called_with_ampersand(self):
+        with mock.patch.object(agent, "WINDOWS", True), \
+             mock.patch.object(agent.sys, "executable", os.path.join(os.getcwd(), "my env", "python.exe")):
+            _, out = self.invoke(agent, "--workspace", "team's $(id)")
+        self.assertIn("& '" + os.path.join("my env", "python.exe") + "' agent.py --workspace 'team''s $(id)' --login", out)
+
+    def test_on_windows_a_plain_hint_stays_plain(self):
+        with mock.patch.object(agent, "WINDOWS", True), \
+             mock.patch.object(agent.sys, "executable", os.path.join(os.getcwd(), ".venv", "Scripts", "python.exe")):
+            _, out = self.invoke(agent)
+        self.assertIn(os.path.join(".venv", "Scripts", "python.exe") + " agent.py --login", out)
+        self.assertNotIn("& ", out)
 
     def test_an_interpreter_outside_this_folder_is_named_in_full(self):
         with mock.patch.object(agent.sys, "executable", "/usr/bin/python3"), \
@@ -244,6 +260,7 @@ class TestHintsCanBePasted(Setup):
 
 
 class TestKeyFileIsNeverHalfWrittenOrBrieflyPublic(Setup):
+    @unittest.skipIf(os.name == "nt", "file modes and inodes are POSIX; Windows takes the folder's permissions")
     def test_a_loose_old_key_file_is_replaced_by_a_private_one_not_rewritten_in_place(self):
         self.save("old-key")
         os.chmod(self.key_file, 0o644)
@@ -252,6 +269,7 @@ class TestKeyFileIsNeverHalfWrittenOrBrieflyPublic(Setup):
         self.assertEqual(stat.S_IMODE(os.stat(self.key_file).st_mode), 0o600)
         self.assertNotEqual(os.stat(self.key_file).st_ino, before)
 
+    @unittest.skipIf(os.name == "nt", "creating a symlink on Windows needs a privilege CI does not have")
     def test_a_symlink_where_the_key_goes_is_replaced_not_followed(self):
         target = os.path.join(self.dir.name, "victim")
         with open(target, "w") as f:
@@ -304,7 +322,7 @@ class TestHintsKeepWhatWasPreviewed(Setup):
         _, out = self.invoke(agent, "--workspace", "my floor", "--cycle-budget", "0.1", env={"TELARCHY_KEY": "k"})
         hint = [l for l in out.splitlines() if l.rstrip().endswith("--live")][-1]
         self.assertIn("--cycle-budget 0.1", hint)
-        self.assertIn("'my floor'", hint)
+        self.assertIn("'my floor'", hint)  # single quotes in bash and in PowerShell alike
 
     def test_the_login_hint_is_a_whole_pasteable_line(self):
         _, out = self.invoke(agent)
