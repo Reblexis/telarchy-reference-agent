@@ -1,2 +1,2 @@
 # Pin the client so a fresh install uses the API contract tested here.
-telarchy @ git+https://github.com/Reblexis/telarchy-app@6be17c65c7b11ec51c6142a5f7dd442341180841#subdirectory=clients/python
+telarchy @ git+https://github.com/Reblexis/telarchy-python@v0.1.0
