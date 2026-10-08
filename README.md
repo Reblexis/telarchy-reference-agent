@@ -144,6 +144,14 @@ live trading; `--live` on an empty bot stops at once and says so instead of
 skipping market after market. A key with trade permission can request a quote with no credits;
 `affordable` and `shortfall` explain the missing funding.
 
+## Trading a private floor you were invited to
+
+A floor that is not public trades for the participants its owner puts in its
+Trader group. Once you are in it, name the floor and run as usual, with your
+key: `agent.py --workspace <its slug or id>`. It is not on the public list
+(your memberships are `GET /api/workspaces`), and you never join it; the
+invitation is the membership.
+
 ## What the baseline means
 
 The deterministic strategy forecasts today's metric value at the future
